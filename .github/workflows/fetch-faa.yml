@@ -1,0 +1,21 @@
+name: Fetch FAA PDF
+on:
+  push:
+    paths: [".github/workflows/fetch-faa.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download PHAK Chapter 7 and commit it
+        run: |
+          mkdir -p pdfs
+          curl -sSL -o pdfs/09_phak_ch7.pdf "https://www.faa.gov/sites/faa.gov/files/09_phak_ch7.pdf"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pdfs/09_phak_ch7.pdf
+          git commit -m "Add PHAK Chapter 7 (FAA public domain)"
+          git push
