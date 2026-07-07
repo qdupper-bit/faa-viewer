@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FAA Reference Viewer</title>
+<script src="lib/pdf.min.js"></script>
+<style>
+  :root{
+    --navy:#0F2A43; --navy-2:#16385a; --gold:#C9A227; --cream:#F6F2E9;
+    --paper:#ffffff; --ink:#1d2b3a; --muted:#5b6b7d;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--cream); color:var(--ink);
+    font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex; flex-direction:column;
+  }
+  /* ---- placard toolbar ---- */
+  #bar{
+    position:sticky; top:0; z-index:5;
+    background:var(--navy); color:var(--cream);
+    border-bottom:3px solid var(--gold);
+    display:flex; align-items:center; gap:10px;
+    padding:8px 12px; flex-wrap:wrap;
+  }
+  #docTitle{
+    font-weight:700; letter-spacing:.02em; margin-right:auto;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:46%;
+  }
+  .grp{display:flex; align-items:center; gap:6px}
+  button, #openLink{
+    min-width:40px; min-height:36px; padding:0 10px;
+    background:var(--navy-2); color:var(--cream);
+    border:1px solid rgba(246,242,233,.25); border-radius:6px;
+    font:inherit; font-weight:600; cursor:pointer;
+    display:inline-flex; align-items:center; justify-content:center; text-decoration:none;
+  }
+  button:hover, #openLink:hover{border-color:var(--gold)}
+  button:focus-visible, #openLink:focus-visible, #pageBox:focus-visible{
+    outline:2px solid var(--gold); outline-offset:2px;
+  }
+  #pageBox{
+    width:56px; min-height:36px; text-align:center; border-radius:6px;
+    border:1px solid rgba(246,242,233,.25); background:var(--navy-2); color:var(--cream);
+    font:600 14px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  #pageCount,#zoomPct{
+    font:600 13px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    color:var(--gold); letter-spacing:.05em; min-width:3.5em; text-align:center;
+  }
+  /* ---- page stack ---- */
+  #wrap{flex:1; overflow:auto; -webkit-overflow-scrolling:touch}
+  #stack{max-width:1100px; margin:0 auto; padding:16px 12px 40px}
+  .page{
+    position:relative; margin:0 auto 16px; background:var(--paper);
+    box-shadow:0 1px 3px rgba(15,42,67,.18), 0 6px 18px rgba(15,42,67,.10);
+    border-radius:3px; scroll-margin-top:64px;
+  }
+  .page canvas{display:block; width:100%; height:100%; border-radius:3px}
+  .pnum{
+    position:absolute; top:6px; right:8px; z-index:1;
+    font:600 10px/1 ui-monospace,monospace; color:var(--muted);
+    background:rgba(246,242,233,.85); padding:3px 6px; border-radius:4px;
+  }
+  /* ---- states ---- */
+  #note{max-width:640px; margin:48px auto; background:var(--paper); border-radius:8px;
+    border-top:4px solid var(--gold); padding:24px 28px; box-shadow:0 6px 18px rgba(15,42,67,.10)}
+  #note h1{font-size:17px; margin:0 0 8px; color:var(--navy)}
+  #note code{background:var(--cream); padding:2px 6px; border-radius:4px; word-break:break-all}
+  #note ul{margin:10px 0 0 18px; padding:0; color:var(--muted)}
+  #note li{margin:4px 0}
+  @media (prefers-reduced-motion: reduce){ *{scroll-behavior:auto !important} }
+  @media (max-width:560px){ #docTitle{max-width:100%; flex-basis:100%} }
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <span id="docTitle">FAA Reference</span>
+  <div class="grp">
+    <button id="prev" title="Previous page" aria-label="Previous page">&#9650;</button>
+    <input id="pageBox" inputmode="numeric" aria-label="Page number" value="1">
+    <span id="pageCount">/ —</span>
+    <button id="next" title="Next page" aria-label="Next page">&#9660;</button>
+  </div>
+  <div class="grp">
+    <button id="zoomOut" title="Zoom out" aria-label="Zoom out">&minus;</button>
+    <span id="zoomPct">—</span>
+    <button id="zoomIn" title="Zoom in" aria-label="Zoom in">+</button>
+    <button id="fit" title="Fit width">Fit</button>
+  </div>
+  <a id="openLink" target="_blank" rel="noopener" title="Open the PDF in a new tab">&#8599;</a>
+</div>
+
+<div id="wrap"><div id="stack"></div></div>
+
+<script>
+(function(){
+  "use strict";
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "lib/pdf.worker.min.js";
+
+  var qs = new URLSearchParams(location.search);
+  var fileParam = qs.get("file") || "pdfs/sample.pdf";
+  var startPage = parseInt(qs.get("page") || (location.hash.match(/page=(\d+)/)||[])[1] || "1", 10);
+  var titleParam = qs.get("title") || "";
+
+  var wrap = document.getElementById("wrap"),
+      stack = document.getElementById("stack"),
+      pageBox = document.getElementById("pageBox"),
+      pageCount = document.getElementById("pageCount"),
+      zoomPct = document.getElementById("zoomPct"),
+      docTitle = document.getElementById("docTitle"),
+      openLink = document.getElementById("openLink");
+
+  function fail(msg, extra){
+    stack.innerHTML =
+      '<div id="note"><h1>' + msg + '</h1>' +
+      '<p>Tried to load: <code>' + fileParam.replace(/</g,"&lt;") + '</code></p>' +
+      '<ul>' +
+      '<li>Check the filename against what is actually in the <code>pdfs/</code> folder (it is case-sensitive).</li>' +
+      '<li>The FAA PDFs are not included in this repo &mdash; download them per the README and upload into <code>pdfs/</code>.</li>' +
+      (extra ? '<li>' + extra + '</li>' : '') +
+      '</ul></div>';
+    pageCount.textContent = "/ —";
+  }
+
+  // Only same-site relative paths — keeps the embed URL simple and predictable.
+  if (/^(https?:)?\/\//i.test(fileParam)) {
+    fail("For simplicity this viewer only loads PDFs stored in its own repo",
+         "Put the file in <code>pdfs/</code> and reference it as <code>file=pdfs/yourfile.pdf</code>.");
+    return;
+  }
+  var fileURL = new URL(fileParam, location.href).href;
+  openLink.href = fileURL;
+
+  var niceName = decodeURIComponent(fileParam.split("/").pop());
+  docTitle.textContent = titleParam || niceName;
+  document.title = (titleParam || niceName) + " — FAA Reference Viewer";
+
+  var pdf = null, total = 0, scale = 1, baseW = 612, baseH = 792, current = 1;
+  var shells = [], observer = null;
+
+  function shellSize(){
+    var w = Math.min(baseW * scale, stack.clientWidth - 4);
+    return { w: w, h: w * (baseH / baseW) };
+  }
+
+  function buildShells(){
+    stack.innerHTML = "";
+    shells = [];
+    var s = shellSize();
+    for (var i = 1; i <= total; i++){
+      var d = document.createElement("div");
+      d.className = "page"; d.dataset.p = i; d.dataset.done = "";
+      d.style.width = s.w + "px"; d.style.height = s.h + "px";
+      var n = document.createElement("span");
+      n.className = "pnum"; n.textContent = i;
+      d.appendChild(n);
+      stack.appendChild(d);
+      shells.push(d);
+    }
+    if (observer) observer.disconnect();
+    observer = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){ if (e.isIntersecting) render(+e.target.dataset.p); });
+    }, { root: wrap, rootMargin: "900px 0px" });
+    shells.forEach(function(d){ observer.observe(d); });
+  }
+
+  function render(n){
+    var shell = shells[n-1];
+    if (!shell || shell.dataset.done === String(scale)) return;
+    shell.dataset.done = String(scale);
+    pdf.getPage(n).then(function(page){
+      var vp = page.getViewport({ scale: 1 });
+      var cssW = parseFloat(shell.style.width);
+      var out = page.getViewport({ scale: cssW / vp.width });
+      var dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+      var canvas = document.createElement("canvas");
+      canvas.width = Math.floor(out.width * dpr);
+      canvas.height = Math.floor(out.height * dpr);
+      shell.style.height = out.height + "px";
+      var old = shell.querySelector("canvas");
+      if (old) old.remove();
+      shell.appendChild(canvas);
+      var ctx = canvas.getContext("2d");
+      page.render({ canvasContext: ctx, viewport: out, transform: dpr !== 1 ? [dpr,0,0,dpr,0,0] : null });
+    }).catch(function(){ shell.dataset.done = ""; });
+  }
+
+  function goTo(n, silent){
+    n = Math.max(1, Math.min(total, n || 1));
+    current = n; pageBox.value = n;
+    if (!silent) shells[n-1].scrollIntoView({ block: "start" });
+    render(n);
+  }
+
+  function setScale(s, anchor){
+    scale = Math.max(0.5, Math.min(3, s));
+    zoomPct.textContent = Math.round(scale * 100) + "%";
+    var keep = anchor || current;
+    buildShells();
+    goTo(keep);
+  }
+
+  function fitWidth(){
+    var target = (wrap.clientWidth - 40) / baseW;
+    setScale(target);
+  }
+
+  wrap.addEventListener("scroll", function(){
+    var mid = wrap.scrollTop + wrap.clientHeight * 0.35, best = 1;
+    for (var i = 0; i < shells.length; i++){
+      if (shells[i].offsetTop <= mid) best = i + 1; else break;
+    }
+    if (best !== current){ current = best; pageBox.value = best; }
+  }, { passive: true });
+
+  document.getElementById("prev").onclick = function(){ goTo(current - 1); };
+  document.getElementById("next").onclick = function(){ goTo(current + 1); };
+  document.getElementById("zoomIn").onclick = function(){ setScale(scale * 1.2); };
+  document.getElementById("zoomOut").onclick = function(){ setScale(scale / 1.2); };
+  document.getElementById("fit").onclick = fitWidth;
+  pageBox.addEventListener("change", function(){ goTo(parseInt(pageBox.value, 10)); });
+  pageBox.addEventListener("keydown", function(e){ if (e.key === "Enter") goTo(parseInt(pageBox.value, 10)); });
+
+  var resizeT = null;
+  window.addEventListener("resize", function(){
+    clearTimeout(resizeT);
+    resizeT = setTimeout(function(){ fitWidth(); }, 200);
+  });
+
+  pdfjsLib.getDocument({ url: fileURL }).promise.then(function(doc){
+    pdf = doc; total = doc.numPages;
+    pageCount.textContent = "/ " + total;
+    return doc.getPage(1);
+  }).then(function(p1){
+    var vp = p1.getViewport({ scale: 1 });
+    baseW = vp.width; baseH = vp.height;
+    var target = (wrap.clientWidth - 40) / baseW;
+    scale = Math.max(0.5, Math.min(1.6, target));
+    zoomPct.textContent = Math.round(scale * 100) + "%";
+    buildShells();
+    goTo(startPage);
+  }).catch(function(err){
+    fail("Couldn't load that PDF", (err && err.name === "MissingPDFException")
+      ? "The file wasn't found at that address (404)."
+      : "Technical detail: <code>" + String(err && err.message || err).replace(/</g,"&lt;") + "</code>");
+  });
+})();
+</script>
+</body>
+</html>
