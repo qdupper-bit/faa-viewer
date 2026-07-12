@@ -1,4 +1,4 @@
-name: Fetch FAA PDF
+name: Fetch FAA PDFs
 on:
   push:
     paths: [".github/workflows/fetch-faa.yml"]
@@ -10,12 +10,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Download PHAK Chapter 7 and commit it
+      - name: Download all PHAK chapters and commit
         run: |
           mkdir -p pdfs
-          curl -sSL -o pdfs/09_phak_ch7.pdf "https://www.faa.gov/sites/faa.gov/files/09_phak_ch7.pdf"
+          for n in $(seq 1 17); do
+            p=$(printf "%02d" $((n+2)))
+            curl -sSL --fail --retry 3 -o "pdfs/${p}_phak_ch${n}.pdf" \
+              "https://www.faa.gov/sites/faa.gov/files/${p}_phak_ch${n}.pdf" \
+            || curl -sSL --fail --retry 3 -o "pdfs/${p}_phak_ch${n}.pdf" \
+              "https://www.faa.gov/sites/faa.gov/files/${p}_phak_ch${n}_0.pdf"
+            echo "Fetched chapter ${n}"
+          done
+          curl -sSL --fail --retry 3 -o pdfs/20_phak_appendices.pdf \
+            "https://www.faa.gov/sites/faa.gov/files/20_phak_appendices.pdf"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pdfs/09_phak_ch7.pdf
-          git commit -m "Add PHAK Chapter 7 (FAA public domain)"
+          git add pdfs/*.pdf
+          git commit -m "Add all PHAK chapters + appendices (FAA public domain, 8083-25C)" || echo "No changes to commit"
           git push
